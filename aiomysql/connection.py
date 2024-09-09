@@ -53,7 +53,8 @@ def connect(host="localhost", user=None, password="",
             connect_timeout=None, read_default_group=None,
             autocommit=False, echo=False,
             local_infile=False, loop=None, ssl=None, auth_plugin='',
-            program_name='', server_public_key=None):
+            program_name='', server_public_key=None,
+            read_timeout=None):
     """See connections.Connection.__init__() for information about
     defaults."""
     coro = _connect(host=host, user=user, password=password, db=db,
@@ -66,7 +67,8 @@ def connect(host="localhost", user=None, password="",
                     read_default_group=read_default_group,
                     autocommit=autocommit, echo=echo,
                     local_infile=local_infile, loop=loop, ssl=ssl,
-                    auth_plugin=auth_plugin, program_name=program_name)
+                    auth_plugin=auth_plugin, program_name=program_name,
+                    read_timeout=read_timeout)
     return _ConnectionContextManager(coro)
 
 
@@ -142,7 +144,7 @@ class Connection:
                  connect_timeout=None, read_default_group=None,
                  autocommit=False, echo=False,
                  local_infile=False, loop=None, ssl=None, auth_plugin='',
-                 program_name='', server_public_key=None):
+                 program_name='', server_public_key=None, read_timeout=None):
         """
         Establish a connection to the MySQL database. Accepts several
         arguments:
@@ -184,6 +186,8 @@ class Connection:
             handshaking with MySQL. (omitted by default)
         :param server_public_key: SHA256 authentication plugin public
             key value.
+        :param read_timeout: The timeout for reading from the connection in seconds
+            (default: None - no timeout)
         :param loop: asyncio loop
         """
         self._loop = loop or asyncio.get_event_loop()
@@ -257,6 +261,7 @@ class Connection:
 
         self.cursorclass = cursorclass
         self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
 
         self._result = None
         self._affected_rows = 0
@@ -654,12 +659,25 @@ class Connection:
 
     async def _read_bytes(self, num_bytes):
         try:
-            data = await self._reader.readexactly(num_bytes)
+            if self.read_timeout:
+                try:
+                    data = await asyncio.wait_for(
+                        self._reader.readexactly(num_bytes),
+                        self.read_timeout
+                    )
+                except asyncio.TimeoutError as e:
+                    raise asyncio.TimeoutError("Read timeout exceeded") from e
+            else:
+                data = await self._reader.readexactly(num_bytes)
         except asyncio.IncompleteReadError as e:
             msg = "Lost connection to MySQL server during query"
             self.close()
             raise OperationalError(CR.CR_SERVER_LOST, msg) from e
-        except OSError as e:
+        except (OSError, asyncio.TimeoutError) as e:
+            msg = f"Lost connection to MySQL server during query ({e})"
+            self.close()
+            raise OperationalError(CR.CR_SERVER_LOST, msg) from e
+        except Exception as e:
             msg = f"Lost connection to MySQL server during query ({e})"
             self.close()
             raise OperationalError(CR.CR_SERVER_LOST, msg) from e

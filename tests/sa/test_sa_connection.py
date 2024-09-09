@@ -36,6 +36,13 @@ def sa_connect(connection_creator):
 
 
 @pytest.mark.run_loop
+async def test_read_timeout(sa_connect):
+    conn = await sa_connect(read_timeout=0.01)
+    with pytest.raises(aiomysql.OperationalError):
+        await conn.execute("DO SLEEP(1)")
+
+
+@pytest.mark.run_loop
 async def test_execute_text_select(sa_connect):
     conn = await sa_connect()
     res = await conn.execute("SELECT * FROM sa_tbl;")
